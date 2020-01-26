@@ -20,9 +20,8 @@ class Game {
     this.map = new LabelMap(this.width, this.height);
     //this.mines = makeGrid(this.width, this.height, false);
     this.flags = makeGrid(this.width, this.height, false);
-    this.flagAdjacency = makeGrid(this.width, this.height, 0);
+    this.unsure = makeGrid(this.width, this.height, false);
     this.numRevealed = 0;
-    this.numFlags = 0;
     this.undoStack = [];
 
     this.state = State.PLAYING;
@@ -30,7 +29,7 @@ class Game {
     this.debug = false;
     this.allowOutside = false;
     this.safeMode = false;
-    this.mineCountDown = false;
+    this.countdownMode = false;
 
     this.recalc();
   }
@@ -218,9 +217,6 @@ class Game {
   }
 
   hasWrongFlags() {
-    if (this.numFlags === 0) {
-      return false;
-    }
     for (let y = 0; y < this.height; y++) {
       for (let x = 0; x < this.width; x++) {
         if (this.flags[y][x]) {
@@ -249,12 +245,11 @@ class Game {
       }
     }
 
-    this.undoStack[this.undoStack.length-1].push({x: x, y: y, flag: this.flags[y][x]});
+    this.undoStack[this.undoStack.length-1].push({
+      x: x, y: y, flag: this.flags[y][x], unsure: this.unsure[y][x]});
 
-    if (this.flags[y][x]) {
-      this.flags[y][x] = false;
-      this.numFlags--;
-    }
+    this.flags[y][x] = false;
+    this.unsure[y][x] = false;
 
     this.map.labels[y][x] = n;
     this.numRevealed++;
@@ -282,10 +277,8 @@ class Game {
       this.map.labels[undo.y][undo.x] = null;
       this.numRevealed--;
 
-      if (undo.flag) {
-        this.flags[undo.y][undo.x] = true;
-        this.numFlags++;
-      }
+      this.flags[undo.y][undo.x] = undo.flag;
+      this.unsure[undo.y][undo.x] = undo.unsure;
     }
 
     if (this.state === State.WIN || this.state === State.DEAD) {
@@ -323,37 +316,52 @@ class Game {
       this.hints[y][x] = hint;
     }
   }
-  
-  modAround(x, y, mod) {
-    for (const [x0, y0] of neighbors(x, y, this.width, this.height)) {
-        this.flagAdjacency[y0][x0] += mod;
-    }
-  }
 
   toggleFlag(x, y) {
     if (!(this.state === State.PLAYING && this.map.labels[y][x] === null)) {
       return;
     }
-    if (this.flags[y][x]) {
+    if (this.unsure[y][x]) {
+      this.unsure[y][x] = false;
+    } else if (this.flags[y][x]) {
       this.flags[y][x] = false;
-      this.numFlags--;
-      this.modAround(x,y,-1);
+      this.unsure[y][x] = true;
     } else {
       this.flags[y][x] = true;
-      this.numFlags++;
-      this.modAround(x,y,1);
     }
-    
+
     this.refresh();
+  }
+
+  countFlagsAround(x, y) {
+    let result = 0;
+    for (const [x0, y0] of neighbors(x, y, this.width, this.height)) {
+      if (this.flags[y0][x0]) {
+        result++;
+      }
+    }
+    return result;
+  }
+
+  countFlags() {
+    let result = 0;
+    for (let y = 0; y < this.height; y++) {
+      for (let x = 0; x < this.width; x++) {
+        if (this.flags[y][x]) {
+          result++;
+        }
+      }
+    }
+    return result;
   }
 
   refresh() {
     for (let y = 0; y < this.height; y++) {
       for (let x = 0; x < this.width; x++) {
         const label = this.map.labels[y][x];
-        const modifier = this.flagAdjacency[y][x];
         const mine = this.mineGrid && this.mineGrid[y][x];
         const flag = this.flags[y][x];
+        const unsure = this.unsure[y][x];
         const hint = this.hints[y][x];
 
         let className;
@@ -364,8 +372,8 @@ class Game {
         } else if (this.state === State.WIN && mine) {
           className = 'unknown bomb-win';
         } else if (label !== null && label > 0) {
-            if (this.mineCountDown) { 
-                const modLabel = label - modifier;
+            if (this.countdownMode) {
+                const modLabel = label - this.countFlagsAround(x, y);
                 className = `known label-${modLabel}`;
             } else {
                 className = `known label-${label}`;
@@ -374,6 +382,8 @@ class Game {
           className = 'known';
         } else if (flag) {
           className = 'unknown clickable flag';
+        } else if (unsure) {
+          className = 'unknown clickable unsure';
         } else if (this.state === State.PLAYING) {
           className = 'unknown clickable';
         } else {
@@ -390,11 +400,13 @@ class Game {
 
     let message;
     switch (this.state) {
-      case State.PLAYING:
-        message = `Mines: ${this.numFlags}/${this.numMines}`;
+      case State.PLAYING: {
+        const numFlags = this.countFlags();
+        message = `Mines: ${numFlags}/${this.numMines}`;
         if (this.debug) {
           message += ', ' + this.solver.debugMessage();
         }
+      }
 
         break;
       case State.WIN:
@@ -805,11 +817,11 @@ function updateMax() {
   }
 }
 
-function setParams(width, height, numMines, mineCountDown) {
+function setParams(width, height, numMines, countdownMode) {
   document.getElementById('width').value = width;
   document.getElementById('height').value = height;
   document.getElementById('numMines').value = numMines;
-  document.getElementById('mineCountDown').value = mineCountDown;
+  document.getElementById('countdownMode').value = countdownMode;
   updateMax();
 }
 
@@ -821,7 +833,7 @@ function undo() {
   game.undo();
 }
 
-const SETTINGS = ['debug', 'allowOutside', 'safeMode', 'mineCountDown'];
+const SETTINGS = ['debug', 'allowOutside', 'safeMode', 'countdownMode'];
 
 function updateSettings() {
   for (const name of SETTINGS) {
